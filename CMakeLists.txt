@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.8.2)
 project(crazyflie_cpp)
 
 if(DEFINED CATKIN_DEVEL_PREFIX)
