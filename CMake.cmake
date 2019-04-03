@@ -18,12 +18,13 @@ include_directories(
 )
 
 add_library(crazyflie_cpp
-        src/Crazyflie.cpp
-        src/CrazyflieUSB.cpp
-        src/Crazyradio.cpp
-        src/crtp.cpp
-        src/USBDevice.cpp
-        )
+  src/Crazyflie.cpp
+  src/CrazyflieUSB.cpp
+  src/Crazyradio.cpp
+  src/crtp.cpp
+  src/USBDevice.cpp
+  src/ITransport.cpp
+)
 
 target_link_libraries(crazyflie_cpp
         ${LIBUSB_1_LIBRARY}

@@ -162,101 +162,17 @@ struct bootloaderReadFlashResponse
   uint8_t data[25];
 } __attribute__((packed));
 
-// RESET_INIT
-
-struct bootloaderResetInitRequest
-{
-  bootloaderResetInitRequest(
-    uint8_t target)
-    : header(target, 0xFF)
-  {
-  }
-
-  bootloader header;
-} __attribute__((packed));
-
-struct bootloaderResetInitResponse
-{
-  bootloaderResetInitRequest request;
-  uint8_t addr[5];
-} __attribute__((packed));
-
 // RESET
 
 struct bootloaderResetRequest
 {
   bootloaderResetRequest(
-    uint8_t target)
-    : header(target, 0xF0)
+    uint8_t bootToFirmware)
+    : header(0xFE, 0xF0)
+    , bootToFirmware(bootToFirmware)
   {
   }
 
   bootloader header;
   uint8_t bootToFirmware; //0=boot to bootloader; otherwise: boot to firmware
-} __attribute__((packed));
-
-/* no response sent */
-
-// ALLOFF
-
-struct bootloaderAllOffRequest
-{
-  bootloaderAllOffRequest(
-    uint8_t target)
-    : header(target, 0x01)
-  {
-  }
-
-  bootloader header;
-} __attribute__((packed));
-
-/* no response sent */
-
-// SYSOFF
-
-struct bootloaderSysOffRequest
-{
-  bootloaderSysOffRequest(
-    uint8_t target)
-    : header(target, 0x02)
-  {
-  }
-
-  bootloader header;
-} __attribute__((packed));
-
-/* no response sent */
-
-// SYSON
-
-struct bootloaderSysOnRequest
-{
-  bootloaderSysOnRequest(
-    uint8_t target)
-    : header(target, 0x03)
-  {
-  }
-
-  bootloader header;
-} __attribute__((packed));
-
-/* no response sent */
-
-// GETVBAT
-
-struct bootloaderGetVBatRequest
-{
-  bootloaderGetVBatRequest(
-    uint8_t target)
-    : header(target, 0x04)
-  {
-  }
-
-  bootloader header;
-} __attribute__((packed));
-
-struct bootloaderGetVBatResponse
-{
-  bootloaderGetVBatRequest request;
-  float vbat;
 } __attribute__((packed));

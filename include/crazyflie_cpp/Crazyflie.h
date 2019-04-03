@@ -11,7 +11,7 @@
 #include <map>
 #include <chrono>
 
-#define ENABLE_SAFELINK 0
+#define ENABLE_SAFELINK 1
 
 class Logger
 {
@@ -108,7 +108,14 @@ public:
 public:
   Crazyflie(
     const std::string& link_uri,
-    Logger& logger = EmptyLogger);
+    Logger& logger = EmptyLogger,
+    std::function<void(const char*)> consoleCb = nullptr);
+
+  int getProtocolVersion();
+
+  std::string getFirmwareVersion();
+
+  std::string getDeviceTypeName();
 
   void logReset();
 
@@ -144,13 +151,19 @@ public:
     float y,
     float z);
 
+  void sendExternalPoseUpdate(
+    float x, float y, float z,
+    float qx, float qy, float qz, float qw);
+
   void sendPing();
 
   void reboot();
   // returns new address
   uint64_t rebootToBootloader();
+
+  void rebootFromBootloader();
+
   void sysoff();
-  void trySysOff();
   void alloff();
   void syson();
   float vbat();
@@ -162,8 +175,6 @@ public:
     BootloaderTarget target,
     size_t size,
     std::vector<uint8_t>& data);
-
-  void setChannel(uint8_t channel);
 
   void requestLogToc(bool forceNoCache=false);
 
@@ -298,22 +309,50 @@ public:
     uint8_t groupMask = 0);
 
 private:
-  void sendPacket(
+  void sendPacketInternal(
     const uint8_t* data,
     uint32_t length,
     ITransport::Ack& result,
     bool useSafeLink = ENABLE_SAFELINK);
 
-  bool sendPacket(
+  template<typename R>
+  void sendPacket(
+    const R& request,
+    ITransport::Ack& result,
+    bool useSafeLink = ENABLE_SAFELINK)
+  {
+    sendPacketInternal(
+      reinterpret_cast<const uint8_t*>(&request), sizeof(request), result, useSafeLink);
+  }
+
+  bool sendPacketInternal(
     const uint8_t* data,
     uint32_t length,
     bool useSafeLink = ENABLE_SAFELINK);
 
- void sendPacketOrTimeout(
+  template<typename R>
+  void sendPacket(
+    const R& request,
+    bool useSafeLink = ENABLE_SAFELINK)
+  {
+    sendPacketInternal(
+      reinterpret_cast<const uint8_t*>(&request), sizeof(request), useSafeLink);
+  }
+
+ void sendPacketOrTimeoutInternal(
    const uint8_t* data,
    uint32_t length,
    bool useSafeLink = ENABLE_SAFELINK,
    float timeout = 1.0);
+
+  template<typename R>
+  void sendPacketOrTimeout(
+    const R& request,
+    bool useSafeLink = ENABLE_SAFELINK)
+  {
+    sendPacketOrTimeoutInternal(
+      reinterpret_cast<const uint8_t*>(&request), sizeof(request), useSafeLink);
+  }
 
   void handleAck(
     const ITransport::Ack& result);
@@ -322,7 +361,7 @@ private:
 
   void startBatchRequest();
 
-  void addRequest(
+  void addRequestInternal(
     const uint8_t* data,
     size_t numBytes,
     size_t numBytesToMatch);
@@ -332,7 +371,7 @@ private:
     const R& request,
     size_t numBytesToMatch)
   {
-    addRequest(
+    addRequestInternal(
       reinterpret_cast<const uint8_t*>(&request), sizeof(request), numBytesToMatch);
   }
 
@@ -452,6 +491,8 @@ private:
   bool m_log_use_V2;
   bool m_param_use_V2;
 
+  int m_protocolVersion;
+
   // logging
   Logger& m_logger;
 };
@@ -488,7 +529,7 @@ public:
       }
 
       m_cf->startBatchRequest();
-      m_cf->addRequest(reinterpret_cast<const uint8_t*>(&request), 3 + 3*i, 2);
+      m_cf->addRequestInternal(reinterpret_cast<const uint8_t*>(&request), 3 + 3*i, 2);
       m_cf->handleRequests();
       auto r = m_cf->getRequestResult<crtpLogControlResponse>(0);
       if (r->result != crtpLogControlResultOk
@@ -516,7 +557,7 @@ public:
       }
 
       m_cf->startBatchRequest();
-      m_cf->addRequest(reinterpret_cast<const uint8_t*>(&request), 3 + 2*i, 2);
+      m_cf->addRequestInternal(reinterpret_cast<const uint8_t*>(&request), 3 + 2*i, 2);
       m_cf->handleRequests();
       auto r = m_cf->getRequestResult<crtpLogControlResponse>(0);
       if (r->result != crtpLogControlResultOk
@@ -618,7 +659,7 @@ public:
         }
       }
       m_cf->startBatchRequest();
-      m_cf->addRequest(reinterpret_cast<const uint8_t*>(&request), 3 + 3*i, 2);
+      m_cf->addRequestInternal(reinterpret_cast<const uint8_t*>(&request), 3 + 3*i, 2);
       m_cf->handleRequests();
       auto r = m_cf->getRequestResult<crtpLogControlResponse>(0);
       if (r->result != crtpLogControlResultOk
@@ -656,7 +697,7 @@ public:
         }
       }
       m_cf->startBatchRequest();
-      m_cf->addRequest(reinterpret_cast<const uint8_t*>(&request), 3 + 2*i, 2);
+      m_cf->addRequestInternal(reinterpret_cast<const uint8_t*>(&request), 3 + 2*i, 2);
       m_cf->handleRequests();
       auto r = m_cf->getRequestResult<crtpLogControlResponse>(0);
       if (r->result != crtpLogControlResultOk

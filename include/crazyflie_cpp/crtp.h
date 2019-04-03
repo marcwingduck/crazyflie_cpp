@@ -48,6 +48,11 @@ typedef struct {
   };
 } crtpPacket_t;
 
+struct crtpEmpty
+{
+  const uint8_t cmd = 0xFF;
+};
+
 // Port 0 (Console)
 struct crtpConsoleResponse
 {
@@ -837,6 +842,38 @@ struct crtpExternalPositionPacked
 }  __attribute__((packed));
 CHECKSIZE(crtpExternalPositionPacked)
 
+struct crtpExternalPoseUpdate
+{
+  crtpExternalPoseUpdate(
+    float x,
+    float y,
+    float z,
+    float qx,
+    float qy,
+    float qz,
+    float qw)
+    : header(0x06, 1)
+    , x(x)
+    , y(y)
+    , z(z)
+    , qx(qx)
+    , qy(qy)
+    , qz(qz)
+    , qw(qw)
+  {
+  }
+  const crtp header;
+  const uint8_t type = 8;
+  float x;
+  float y;
+  float z;
+  float qx;
+  float qy;
+  float qz;
+  float qw;
+}  __attribute__((packed));
+CHECKSIZE(crtpExternalPositionUpdate)
+
 struct crtpStopRequest
 {
   crtpStopRequest();
@@ -1122,6 +1159,63 @@ struct crtpPosExtBringup
 CHECKSIZE(crtpPosExtBringup)
 
 // Port 13 (Platform)
+
+struct crtpGetProtocolVersionRequest
+{
+  crtpGetProtocolVersionRequest()
+    : header(0x0D, 1)
+    {
+    }
+
+    const crtp header;
+    const uint8_t cmd = 0;
+} __attribute__((packed));
+CHECKSIZE(crtpGetProtocolVersionRequest)
+
+struct crtpGetProtocolVersionResponse
+{
+  crtpGetProtocolVersionRequest request;
+  int version;
+} __attribute__((packed));
+CHECKSIZE_RESPONSE(crtpGetProtocolVersionResponse)
+
+struct crtpGetFirmwareVersionRequest
+{
+  crtpGetFirmwareVersionRequest()
+    : header(0x0D, 1)
+    {
+    }
+
+    const crtp header;
+    const uint8_t cmd = 1;
+} __attribute__((packed));
+CHECKSIZE(crtpGetProtocolVersionRequest)
+
+struct crtpGetFirmwareVersionResponse
+{
+  crtpGetFirmwareVersionRequest request;
+  char version[30];
+} __attribute__((packed));
+CHECKSIZE_RESPONSE(crtpGetFirmwareVersionResponse)
+
+struct crtpGetDeviceTypeNameRequest
+{
+  crtpGetDeviceTypeNameRequest()
+    : header(0x0D, 1)
+    {
+    }
+
+    const crtp header;
+    const uint8_t cmd = 2;
+} __attribute__((packed));
+CHECKSIZE(crtpGetProtocolVersionRequest)
+
+struct crtpGetDeviceTypeNameResponse
+{
+  crtpGetDeviceTypeNameRequest request;
+  char name[30];
+} __attribute__((packed));
+CHECKSIZE_RESPONSE(crtpGetDeviceTypeNameResponse)
 
 // The crazyflie-nrf firmware sends empty packets with the signal strength, if nothing else is in the queue
 struct crtpPlatformRSSIAck

@@ -3,7 +3,8 @@
 
 #include "Crazyflie.h"
 #include "crtp.h"
-#include "bootloader.h"
+#include "crtpBootloader.h"
+#include "crtpNRF51.h"
 
 #include "Crazyradio.h"
 #include "CrazyflieUSB.h"
@@ -15,8 +16,9 @@
 #include <cmath>
 #include <inttypes.h>
 
-#define MAX_RADIOS 16
-#define MAX_USB     4
+const static int MAX_RADIOS = 16;
+const static int MAX_USB = 4;
+const static bool LOG_COMMUNICATION = 0;
 
 Crazyradio* g_crazyradios[MAX_RADIOS];
 std::mutex g_radioMutex[MAX_RADIOS];
@@ -29,7 +31,8 @@ Logger EmptyLogger;
 
 Crazyflie::Crazyflie(
   const std::string& link_uri,
-  Logger& logger)
+  Logger& logger,
+  std::function<void(const char*)> consoleCb)
   : m_radio(nullptr)
   , m_transport(nullptr)
   , m_devId(0)
@@ -42,7 +45,7 @@ Crazyflie::Crazyflie(
   , m_paramValues()
   , m_emptyAckCallback(nullptr)
   , m_linkQualityCallback(nullptr)
-  , m_consoleCallback(nullptr)
+  , m_consoleCallback(consoleCb)
   , m_log_use_V2(false)
   , m_param_use_V2(false)
   , m_logger(logger)
@@ -83,6 +86,7 @@ Crazyflie::Crazyflie(
       std::unique_lock<std::mutex> mlock(g_radioMutex[m_devId]);
       if (!g_crazyradios[m_devId]) {
         g_crazyradios[m_devId] = new Crazyradio(m_devId);
+        g_crazyradios[m_devId]->enableLogging(LOG_COMMUNICATION);
         // g_crazyradios[m_devId]->setAckEnable(false);
         g_crazyradios[m_devId]->setAckEnable(true);
         g_crazyradios[m_devId]->setArc(0);
@@ -103,6 +107,7 @@ Crazyflie::Crazyflie(
       std::unique_lock<std::mutex> mlock(g_crazyflieusbMutex[m_devId]);
       if (!g_crazyflieUSB[m_devId]) {
         g_crazyflieUSB[m_devId] = new CrazyflieUSB(m_devId);
+        g_crazyflieUSB[m_devId]->enableLogging(LOG_COMMUNICATION);
       }
     }
 
@@ -114,14 +119,43 @@ Crazyflie::Crazyflie(
   }
 
   // enable safelink
-  if (ENABLE_SAFELINK) {
-    const uint8_t enable_safelink[] = {0xFF, 0x05, 0x01};
-    sendPacketOrTimeout(enable_safelink, sizeof(enable_safelink), false);
+  if (m_radio) {
+    crtpNrf51SetSafelinkRequest request(ENABLE_SAFELINK);
+    sendPacketOrTimeout(request, /*useSafeLink*/false);
   }
 
   m_curr_up = 0;
   m_curr_down = 0;
 
+  m_protocolVersion = getProtocolVersion();
+
+}
+
+int Crazyflie::getProtocolVersion()
+{
+  crtpGetProtocolVersionRequest req;
+  startBatchRequest();
+  addRequest(req, 1);
+  handleRequests();
+  return getRequestResult<crtpGetProtocolVersionResponse>(0)->version;
+}
+
+std::string Crazyflie::getFirmwareVersion()
+{
+  crtpGetFirmwareVersionRequest req;
+  startBatchRequest();
+  addRequest(req, 1);
+  handleRequests();
+  return std::string(getRequestResult<crtpGetFirmwareVersionResponse>(0)->version);
+}
+
+std::string Crazyflie::getDeviceTypeName()
+{
+  crtpGetDeviceTypeNameRequest req;
+  startBatchRequest();
+  addRequest(req, 1);
+  handleRequests();
+  return std::string(getRequestResult<crtpGetDeviceTypeNameResponse>(0)->name);
 }
 
 void Crazyflie::logReset()
@@ -139,13 +173,13 @@ void Crazyflie::sendSetpoint(
   uint16_t thrust)
 {
   crtpSetpointRequest request(roll, pitch, yawrate, thrust);
-  sendPacket((const uint8_t*)&request, sizeof(request));
+  sendPacket(request);
 }
 
 void Crazyflie::sendStop()
 {
   crtpStopRequest request;
-  sendPacket((const uint8_t*)&request, sizeof(request));
+  sendPacket(request);
 }
 
 void Crazyflie::sendPositionSetpoint(
@@ -155,7 +189,7 @@ void Crazyflie::sendPositionSetpoint(
   float yaw)
 {
   crtpPositionSetpointRequest request(x, y, z, yaw);
-  sendPacket((const uint8_t*)&request, sizeof(request));
+  sendPacket(request);
 }
 
 void Crazyflie::sendHoverSetpoint(
@@ -165,7 +199,7 @@ void Crazyflie::sendHoverSetpoint(
   float zDistance)
 {
   crtpHoverSetpointRequest request(vx, vy, yawrate, zDistance);
-  sendPacket((const uint8_t*)&request, sizeof(request));
+  sendPacket(request);
 }
 
 void Crazyflie::sendFullStateSetpoint(
@@ -181,7 +215,7 @@ void Crazyflie::sendFullStateSetpoint(
     ax, ay, az,
     qx, qy, qz, qw,
     rollRate, pitchRate, yawRate);
-  sendPacket((const uint8_t*)&request, sizeof(request));
+  sendPacket(request);
 }
 
 void Crazyflie::sendExternalPositionUpdate(
@@ -190,13 +224,21 @@ void Crazyflie::sendExternalPositionUpdate(
   float z)
 {
   crtpExternalPositionUpdate position(x, y, z);
-  sendPacket((const uint8_t*)&position, sizeof(position));
+  sendPacket(position);
+}
+
+void Crazyflie::sendExternalPoseUpdate(
+  float x, float y, float z,
+  float qx, float qy, float qz, float qw)
+{
+  crtpExternalPoseUpdate pose(x, y, z, qx, qy, qz, qw);
+  sendPacket(pose);
 }
 
 void Crazyflie::sendPing()
 {
-  uint8_t ping = 0xFF;
-  sendPacket(&ping, sizeof(ping));
+  crtpEmpty req;
+  sendPacket(req);
 }
 
 /**
@@ -209,7 +251,7 @@ void Crazyflie::transmitPackets()
     std::vector<crtpPacket_t>::iterator it;
     for (it = m_outgoing_packets.begin(); it != m_outgoing_packets.end(); it++)
     {
-      sendPacket(it->raw, it->size+1);
+      sendPacketInternal(it->raw, it->size+1);
     }
     m_outgoing_packets.clear();
   }
@@ -218,82 +260,89 @@ void Crazyflie::transmitPackets()
 // https://forum.bitcraze.io/viewtopic.php?f=9&t=1488
 void Crazyflie::reboot()
 {
-  const uint8_t reboot_init[] = {0xFF, 0xFE, 0xFF};
-  sendPacketOrTimeout(reboot_init, sizeof(reboot_init));
+  if (m_radio) {
+    crtpNrf51ResetInitRequest req1;
+    sendPacketOrTimeout(req1);
 
-  const uint8_t reboot_to_firmware[] = {0xFF, 0xFE, 0xF0, 0x01};
-  sendPacketOrTimeout(reboot_to_firmware, sizeof(reboot_to_firmware));
+    crtpNrf51ResetRequest req2(/*bootToFirmware*/ 1);
+    sendPacketOrTimeout(req2);
+  }
 }
 
 uint64_t Crazyflie::rebootToBootloader()
 {
-  bootloaderResetInitRequest req(TargetNRF51);
-  startBatchRequest();
-  addRequest(req, 3);
-  handleRequests(/*crtpMode=*/false);
-  const bootloaderResetInitResponse* response = getRequestResult<bootloaderResetInitResponse>(0);
+  if (m_radio) {
+    crtpNrf51ResetInitRequest req;
+    startBatchRequest();
+    addRequest(req, 2);
+    handleRequests();
+    const crtpNrf51ResetInitResponse* response = getRequestResult<crtpNrf51ResetInitResponse>(0);
 
-  uint64_t result =
-      ((uint64_t)response->addr[0] << 0)
-    | ((uint64_t)response->addr[1] << 8)
-    | ((uint64_t)response->addr[2] << 16)
-    | ((uint64_t)response->addr[3] << 24)
-    | ((uint64_t)0xb1 << 32);
+    uint64_t result =
+        ((uint64_t)response->addr[0] << 0)
+      | ((uint64_t)response->addr[1] << 8)
+      | ((uint64_t)response->addr[2] << 16)
+      | ((uint64_t)response->addr[3] << 24)
+      | ((uint64_t)0xb1 << 32);
 
-  const uint8_t reboot_to_bootloader[] = {0xFF, 0xFE, 0xF0, 0x00};
-  // for (size_t i = 0; i < 10; ++i) {
-  //   if (sendPacket(reboot_to_bootloader, sizeof(reboot_to_bootloader))) {
-  //     break;
-  //   }
-  // }
-  sendPacketOrTimeout(reboot_to_bootloader, sizeof(reboot_to_bootloader));
+    crtpNrf51ResetRequest req2(/*bootToFirmware*/ 0);
+    sendPacketOrTimeout(req2);
 
-  return result;
+    // switch to new address
+    m_address = result;
+    m_channel = 0;
+    m_datarate = Crazyradio::Datarate_2MPS;
+
+
+    return result;
+  } else {
+    return -1;
+  }
+}
+
+void Crazyflie::rebootFromBootloader()
+{
+  if (m_radio) {
+    bootloaderResetRequest req(/*bootToFirmware*/ 1);
+    sendPacketOrTimeout(req, /*useSafeLink*/ false);
+  }
 }
 
 void Crazyflie::sysoff()
 {
-  const uint8_t shutdown[] = {0xFF, 0xFE, 0x02};
-  sendPacketOrTimeout(shutdown, sizeof(shutdown));
-}
-
-void Crazyflie::trySysOff()
-{
-  const uint8_t shutdown[] = {0xFF, 0xFE, 0x02};
-  for (size_t i = 0; i < 10; ++i) {
-    if (sendPacket(shutdown, sizeof(shutdown))) {
-      break;
-    }
+  if (m_radio) {
+    crtpNrf51SysOffRequest req;
+    sendPacketOrTimeout(req);
   }
 }
 
 void Crazyflie::alloff()
 {
-  const uint8_t shutdown[] = {0xFF, 0xFE, 0x01};
-  sendPacketOrTimeout(shutdown, sizeof(shutdown));
+  if (m_radio) {
+    crtpNrf51AllOffRequest req;
+    sendPacketOrTimeout(req);
+  }
 }
 
 void Crazyflie::syson()
 {
-  const uint8_t shutdown[] = {0xFF, 0xFE, 0x03};
-  sendPacketOrTimeout(shutdown, sizeof(shutdown));
+  if (m_radio) {
+    crtpNrf51SysOnRequest req;
+    sendPacketOrTimeout(req);
+  }
 }
 
 float Crazyflie::vbat()
 {
-  struct nrf51vbatResponse
-  {
-    uint8_t dummy1;
-    uint8_t dummy2;
-    uint8_t dummy3;
-    float vbat;
-  } __attribute__((packed));
-
-  const uint8_t shutdown[] = {0xFF, 0xFE, 0x04};
-  startBatchRequest();
-  addRequest(shutdown, 2);
-  handleRequests();
-  return getRequestResult<nrf51vbatResponse>(0)->vbat;
+  if (m_radio) {
+    crtpNrf51GetVBatRequest req;
+    startBatchRequest();
+    addRequest(req, 2);
+    handleRequests();
+    return getRequestResult<crtpNrf51GetVBatResponse>(0)->vbat;
+  } else {
+    return nan("");
+  }
 }
 
 void Crazyflie::writeFlash(
@@ -309,12 +358,6 @@ void Crazyflie::writeFlash(
   uint16_t pageSize = response->pageSize;
   uint16_t flashStart = response->flashStart;
   uint16_t nBuffPage = response->nBuffPage;
-  // std::cout << "pageSize: " << pageSize
-  //           << " nBuffPage: " << nBuffPage
-  //           << " nFlashPage: " << response->nFlashPage
-  //           << " flashStart: " << flashStart
-  //           << " version: " << (int)response->version
-  //           << std::endl;
 
   uint16_t numPages = ceil(data.size() / (float)pageSize);
   if (numPages + flashStart >= response->nFlashPage) {
@@ -322,14 +365,26 @@ void Crazyflie::writeFlash(
     sstr << "Requested size too large!";
     throw std::runtime_error(sstr.str());
   }
-  // std::cout << "numPages: " << numPages << std::endl;
+
+  std::stringstream sstr;
+  sstr << "pageSize: " << pageSize
+            << " nBuffPage: " << nBuffPage
+            << " nFlashPage: " << response->nFlashPage
+            << " flashStart: " << flashStart
+            << " version: " << (int)response->version
+            << " numPages: " << numPages;
+  m_logger.info(sstr.str());
 
   // write flash
   size_t offset = 0;
   uint16_t usedBuffers = 0;
   // startBatchRequest();
   for (uint16_t page = flashStart; page < numPages + flashStart; ++page) {
+    std::stringstream sstr;
+    sstr << "page: " << page - flashStart + 1 << " / " << numPages;
+    m_logger.info(sstr.str());
     for (uint16_t address = 0; address < pageSize; address += 25) {
+
       // std::cout << "request: " << page << " " << address << std::endl;
       bootloaderLoadBufferRequest req(target, usedBuffers, address);
       size_t requestedSize = std::min<size_t>(data.size() - offset, std::min<size_t>(25, pageSize - address));
@@ -341,7 +396,7 @@ void Crazyflie::writeFlash(
 
       // auto start = std::chrono::system_clock::now();
       // while (true) {
-        sendPacketOrTimeout((uint8_t*)&req, 7 + requestedSize, false);
+        sendPacketOrTimeoutInternal((uint8_t*)&req, 7 + requestedSize, false);
       //   startBatchRequest();
       //   bootloaderReadBufferRequest req2(target, usedBuffers, address);
       //   addRequest(req2, 7);
@@ -386,7 +441,7 @@ void Crazyflie::writeFlash(
 
       // write flash
       bootloaderWriteFlashRequest req(target, 0, page - usedBuffers + 1, usedBuffers);
-      sendPacketOrTimeout((uint8_t*)&req, sizeof(req), false);
+      sendPacketOrTimeoutInternal((uint8_t*)&req, sizeof(req), false);
 
       auto start = std::chrono::system_clock::now();
 
@@ -394,7 +449,7 @@ void Crazyflie::writeFlash(
       while (true) {
         ITransport::Ack ack;
         bootloaderFlashStatusRequest statReq(target);
-        sendPacket((const uint8_t*)&statReq, sizeof(statReq), ack, false);
+        sendPacket(statReq, ack, false);
         if (   ack.ack
             && ack.size == 5
             && memcmp(&req, ack.data, 3) == 0) {
@@ -417,7 +472,7 @@ void Crazyflie::writeFlash(
         std::chrono::duration<double> elapsedSeconds = end-start;
         if (elapsedSeconds.count() > 0.5) {
           start = end;
-          sendPacketOrTimeout((uint8_t*)&req, sizeof(req), false);
+          sendPacketOrTimeout(req, false);
           ++tries;
           if (tries > 5) {
             throw std::runtime_error("timeout");
@@ -451,12 +506,6 @@ void Crazyflie::readFlash(
   const bootloaderGetInfoResponse* response = getRequestResult<bootloaderGetInfoResponse>(0);
   uint16_t pageSize = response->pageSize;
   uint16_t flashStart = response->flashStart;
-  // std::cout << "pageSize: " << pageSize
-  //           << " nBuffPage: " << response->nBuffPage
-  //           << " nFlashPage: " << response->nFlashPage
-  //           << " flashStart: " << flashStart
-  //           << " version: " << (int)response->version
-  //           << std::endl;
 
   uint16_t numPages = ceil(size / (float)pageSize);
   if (numPages + flashStart >= response->nFlashPage) {
@@ -464,7 +513,14 @@ void Crazyflie::readFlash(
     sstr << "Requested size too large!";
     throw std::runtime_error(sstr.str());
   }
-  // std::cout << "numPages: " << numPages << std::endl;
+
+  std::stringstream sstr;
+  sstr << "pageSize: " << pageSize
+       << " nFlashPage: " << response->nFlashPage
+       << " flashStart: " << flashStart
+       << " version: " << (int)response->version
+       << " numPages: " << numPages;
+  m_logger.info(sstr.str());
 
   // read flash
   size_t offset = 0;
@@ -501,12 +557,6 @@ void Crazyflie::readFlash(
   }
 }
 
-void Crazyflie::setChannel(uint8_t channel)
-{
-  const uint8_t setChannel[] = {0xFF, 0x03, 0x01, channel};
-  sendPacketOrTimeout(setChannel, sizeof(setChannel));
-}
-
 void Crazyflie::requestLogToc(bool forceNoCache)
 {
   m_log_use_V2 = true;
@@ -516,11 +566,11 @@ void Crazyflie::requestLogToc(bool forceNoCache)
   crtpLogGetInfoV2Request infoRequest;
   startBatchRequest();
   addRequest(infoRequest, 1);
-  try {
+  if (m_protocolVersion >= 4) {
     handleRequests();
     len = getRequestResult<crtpLogGetInfoV2Response>(0)->log_len;
     crc = getRequestResult<crtpLogGetInfoV2Response>(0)->log_crc;
-  } catch (std::runtime_error& e) {
+  } else {
     // std::cout << "Fall back to V1 param API" << std::endl;
     m_log_use_V2 = false;
 
@@ -622,11 +672,11 @@ void Crazyflie::requestParamToc(bool forceNoCache)
   startBatchRequest();
   // std::cout << "infoReq" << std::endl;
   addRequest(infoRequest, 1);
-  try {
+  if (m_protocolVersion >= 4) {
     handleRequests();
     numParam = getRequestResult<crtpParamTocGetInfoV2Response>(0)->numParam;
     crc = getRequestResult<crtpParamTocGetInfoV2Response>(0)->crc;
-  } catch (std::runtime_error& e) {
+  } else {
     // std::cout << "Fall back to V1 param API" << std::endl;
     m_param_use_V2 = false;
 
@@ -925,24 +975,24 @@ void Crazyflie::setParam(uint8_t id, const ParamValue& value)
   setRequestedParams();
 }
 
-bool Crazyflie::sendPacket(
+bool Crazyflie::sendPacketInternal(
   const uint8_t* data,
   uint32_t length,
   bool useSafeLink)
 {
   ITransport::Ack ack;
-  sendPacket(data, length, ack, useSafeLink);
+  sendPacketInternal(data, length, ack, useSafeLink);
   return ack.ack;
 }
 
- void Crazyflie::sendPacketOrTimeout(
+ void Crazyflie::sendPacketOrTimeoutInternal(
    const uint8_t* data,
    uint32_t length,
    bool useSafeLink,
    float timeout)
 {
   auto start = std::chrono::system_clock::now();
-  while (!sendPacket(data, length, useSafeLink)) {
+  while (!sendPacketInternal(data, length, useSafeLink)) {
     auto end = std::chrono::system_clock::now();
     std::chrono::duration<double> elapsedSeconds = end-start;
     if (elapsedSeconds.count() > timeout) {
@@ -951,7 +1001,7 @@ bool Crazyflie::sendPacket(
   }
 }
 
-void Crazyflie::sendPacket(
+void Crazyflie::sendPacketInternal(
   const uint8_t* data,
   uint32_t length,
   ITransport::Ack& ack,
@@ -1082,9 +1132,11 @@ void Crazyflie::handleAck(
     // handled in batch system
   }
   else if (crtpPlatformRSSIAck::match(result)) {
-    crtpPlatformRSSIAck* r = (crtpPlatformRSSIAck*)result.data;
-    if (m_emptyAckCallback) {
-      m_emptyAckCallback(r);
+    if (result.size >= 3) {
+      crtpPlatformRSSIAck* r = (crtpPlatformRSSIAck*)result.data;
+      if (m_emptyAckCallback) {
+        m_emptyAckCallback(r);
+      }
     }
   }
   else {
@@ -1151,7 +1203,7 @@ void Crazyflie::startBatchRequest()
   m_batchRequests.clear();
 }
 
-void Crazyflie::addRequest(
+void Crazyflie::addRequestInternal(
   const uint8_t* data,
   size_t numBytes,
   size_t numBytesToMatch)
@@ -1181,7 +1233,7 @@ void Crazyflie::handleRequests(
       for (const auto& request : m_batchRequests) {
         if (!request.finished) {
           // std::cout << "sendReq" << std::endl;
-          sendPacket(request.request.data(), request.request.size(), ack, useSafeLink);
+          sendPacketInternal(request.request.data(), request.request.size(), ack, useSafeLink);
           handleBatchAck(ack, crtpMode);
 
           auto end = std::chrono::system_clock::now();
@@ -1191,11 +1243,13 @@ void Crazyflie::handleRequests(
           }
         }
       }
-      sendPing = true;
+      if (m_radio) {
+        sendPing = true;
+      }
     } else {
       for (size_t i = 0; i < 10; ++i) {
-        uint8_t ping = 0xFF;
-        sendPacket(&ping, sizeof(ping), ack, useSafeLink);
+        crtpEmpty ping;
+        sendPacket(ping, ack, useSafeLink);
         handleBatchAck(ack, crtpMode);
         // if (ack.ack && crtpPlatformRSSIAck::match(ack)) {
         //   sendPing = false;
@@ -1258,25 +1312,25 @@ void Crazyflie::setGroupMask(uint8_t groupMask)
 void Crazyflie::takeoff(float height, float duration, uint8_t groupMask)
 {
   crtpCommanderHighLevelTakeoffRequest req(groupMask, height, duration);
-  sendPacketOrTimeout((uint8_t*)&req, sizeof(req));
+  sendPacketOrTimeout(req);
 }
 
 void Crazyflie::land(float height, float duration, uint8_t groupMask)
 {
   crtpCommanderHighLevelLandRequest req(groupMask, height, duration);
-  sendPacketOrTimeout((uint8_t*)&req, sizeof(req));
+  sendPacketOrTimeout(req);
 }
 
 void Crazyflie::stop(uint8_t groupMask)
 {
   crtpCommanderHighLevelStopRequest req(groupMask);
-  sendPacketOrTimeout((uint8_t*)&req, sizeof(req));
+  sendPacketOrTimeout(req);
 }
 
 void Crazyflie::goTo(float x, float y, float z, float yaw, float duration, bool relative, uint8_t groupMask)
 {
   crtpCommanderHighLevelGoToRequest req(groupMask, relative, x, y, z, yaw, duration);
-  sendPacketOrTimeout((uint8_t*)&req, sizeof(req));
+  sendPacketOrTimeout(req);
 }
 
 void Crazyflie::uploadTrajectory(
@@ -1295,7 +1349,7 @@ void Crazyflie::uploadTrajectory(
         size_t size = std::min<size_t>(remainingBytes, 24);
         memcpy(req.data, reinterpret_cast<const uint8_t*>(pieces.data()) + i * 24, size);
         remainingBytes -= size;
-        addRequest(reinterpret_cast<const uint8_t*>(&req), 6 + size, 5);
+        addRequestInternal(reinterpret_cast<const uint8_t*>(&req), 6 + size, 5);
       }
       // define trajectory
       crtpCommanderHighLevelDefineTrajectoryRequest req(trajectoryId);
@@ -1319,7 +1373,7 @@ void Crazyflie::startTrajectory(
   uint8_t groupMask)
 {
   crtpCommanderHighLevelStartTrajectoryRequest req(groupMask, relative, reversed, trajectoryId, timescale);
-  sendPacketOrTimeout((uint8_t*)&req, sizeof(req));
+  sendPacketOrTimeout(req);
 }
 
 ////////////////////////////////////////////////////////////////
@@ -1368,6 +1422,7 @@ CrazyflieBroadcaster::CrazyflieBroadcaster(
       std::unique_lock<std::mutex> mlock(g_radioMutex[m_devId]);
       if (!g_crazyradios[m_devId]) {
         g_crazyradios[m_devId] = new Crazyradio(m_devId);
+        g_crazyradios[m_devId]->enableLogging(LOG_COMMUNICATION);
         // g_crazyradios[m_devId]->setAckEnable(false);
         g_crazyradios[m_devId]->setAckEnable(true);
         g_crazyradios[m_devId]->setArc(0);
