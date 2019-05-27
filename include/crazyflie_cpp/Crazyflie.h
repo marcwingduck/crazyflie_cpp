@@ -571,8 +571,14 @@ public:
 
   ~LogBlock()
   {
-    stop();
-    m_cf->unregisterLogBlock(m_id);
+    try {
+      stop();
+      m_cf->unregisterLogBlock(m_id);
+    }
+    catch (std::exception &e)
+    {
+      std::cerr << "Error unregistering log block!\n";
+    }
   }
 
 
