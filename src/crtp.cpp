@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <math.h>
+#include <cstring>
 #include "crtp.h"
 
 // Note: the quaternion compression code is copied from
@@ -39,29 +40,29 @@ static inline uint32_t quatcompress(float const q[4])
 	return comp;
 }
 
-// This is the matching function to decompress (not used on the host)
+// This is the matching function to decompress
 // decompress a quaternion from 32 bit compressed representation.
-// static inline void quatdecompress(uint32_t comp, float q[4])
-// {
-// 	float const SMALL_MAX = 1.0 / sqrt(2);
-// 	unsigned const mask = (1 << 9) - 1;
+void quatdecompress(uint32_t comp, float q[4])
+{
+	float const SMALL_MAX = 1.0 / sqrt(2);
+	unsigned const mask = (1 << 9) - 1;
 
-// 	int const i_largest = comp >> 30;
-// 	float sum_squares = 0;
-// 	for (int i = 3; i >= 0; --i) {
-// 		if (i != i_largest) {
-// 			unsigned mag = comp & mask;
-// 			unsigned negbit = (comp >> 9) & 0x1;
-// 			comp = comp >> 10;
-// 			q[i] = SMALL_MAX * ((float)mag) / mask;
-// 			if (negbit == 1) {
-// 				q[i] = -q[i];
-// 			}
-// 			sum_squares += q[i] * q[i];
-// 		}
-// 	}
-// 	q[i_largest] = sqrtf(1.0f - sum_squares);
-// }
+	int const i_largest = comp >> 30;
+	float sum_squares = 0;
+	for (int i = 3; i >= 0; --i) {
+		if (i != i_largest) {
+			unsigned mag = comp & mask;
+			unsigned negbit = (comp >> 9) & 0x1;
+			comp = comp >> 10;
+			q[i] = SMALL_MAX * ((float)mag) / mask;
+			if (negbit == 1) {
+				q[i] = -q[i];
+			}
+			sum_squares += q[i] * q[i];
+		}
+	}
+	q[i_largest] = sqrtf(1.0f - sum_squares);
+}
 
 crtpFullStateSetpointRequest::crtpFullStateSetpointRequest(
   float x, float y, float z,
@@ -119,4 +120,98 @@ crtpPositionSetpointRequest::crtpPositionSetpointRequest(
 	this->y = y;
 	this->z = z;
 	this->yaw = yaw;
+}
+
+template<class T>
+crtpParamSetByNameRequest<T>::crtpParamSetByNameRequest(
+	const char* group,
+	const char* name,
+	uint8_t paramType,
+	const void* value,
+	uint8_t valueSize)
+	: header(2,3)
+{
+	size_t groupLen = strlen(group);
+	size_t nameLen = strlen(name);
+	// TODO: do size checking here...
+
+	int idx = 0;
+	// first insert group (followed by \0)
+	memcpy(&data[idx], group, groupLen + 1);
+	idx += groupLen + 1;
+	// insert name (followed by \0)
+	memcpy(&data[idx], name, nameLen + 1);
+	idx += nameLen + 1;
+	// insert type
+	data[idx] = paramType;
+	idx++;
+	// insert value
+	memcpy(&data[idx], value, valueSize);
+	idx += valueSize;
+
+	size_ = idx + 2;
+	responseSize_ = 1+groupLen+1+nameLen+1+1;
+}
+
+template <>
+crtpParamSetByNameRequest<uint8_t>::crtpParamSetByNameRequest(
+	const char* group,
+	const char* name,
+	const uint8_t& value)
+	: crtpParamSetByNameRequest(group, name, ParamTypeUint8, &value, sizeof(uint8_t))
+{
+}
+
+template <>
+crtpParamSetByNameRequest<int8_t>::crtpParamSetByNameRequest(
+	const char* group,
+	const char* name,
+	const int8_t& value)
+	: crtpParamSetByNameRequest(group, name, ParamTypeInt8, &value, sizeof(int8_t))
+{
+}
+
+template <>
+crtpParamSetByNameRequest<uint16_t>::crtpParamSetByNameRequest(
+	const char* group,
+	const char* name,
+	const uint16_t& value)
+	: crtpParamSetByNameRequest(group, name, ParamTypeUint16, &value, sizeof(uint16_t))
+{
+}
+
+template <>
+crtpParamSetByNameRequest<int16_t>::crtpParamSetByNameRequest(
+	const char* group,
+	const char* name,
+	const int16_t& value)
+	: crtpParamSetByNameRequest(group, name, ParamTypeInt16, &value, sizeof(int16_t))
+{
+}
+
+template <>
+crtpParamSetByNameRequest<uint32_t>::crtpParamSetByNameRequest(
+	const char* group,
+	const char* name,
+	const uint32_t& value)
+	: crtpParamSetByNameRequest(group, name, ParamTypeUint32, &value, sizeof(uint32_t))
+{
+}
+
+template <>
+crtpParamSetByNameRequest<int32_t>::crtpParamSetByNameRequest(
+	const char* group,
+	const char* name,
+	const int32_t& value)
+	: crtpParamSetByNameRequest(group, name, ParamTypeInt32, &value, sizeof(int32_t))
+{
+}
+
+template <>
+crtpParamSetByNameRequest<float>::crtpParamSetByNameRequest(
+	const char* group,
+	const char* name,
+	const float& value)
+	: crtpParamSetByNameRequest(group, name, ParamTypeFloat, &value, sizeof(float))
+{
 }

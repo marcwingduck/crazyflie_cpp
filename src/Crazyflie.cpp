@@ -127,7 +127,7 @@ Crazyflie::Crazyflie(
   m_curr_up = 0;
   m_curr_down = 0;
 
-  m_protocolVersion = getProtocolVersion();
+  m_protocolVersion = -1;
 
 }
 
@@ -180,6 +180,18 @@ void Crazyflie::sendStop()
 {
   crtpStopRequest request;
   sendPacket(request);
+}
+
+void Crazyflie::emergencyStop()
+{
+  crtpEmergencyStopRequest request;
+  sendPacketOrTimeout(request);
+}
+
+void Crazyflie::emergencyStopWatchdog()
+{
+  crtpEmergencyStopWatchdogRequest request;
+  sendPacketOrTimeout(request);
 }
 
 void Crazyflie::sendPositionSetpoint(
@@ -563,6 +575,11 @@ void Crazyflie::requestLogToc(bool forceNoCache)
   uint16_t len;
   uint32_t crc;
 
+  // Lazily initialize protocol version
+  if (m_protocolVersion < 0) {
+    m_protocolVersion = getProtocolVersion();
+  }
+
   crtpLogGetInfoV2Request infoRequest;
   startBatchRequest();
   addRequest(infoRequest, 1);
@@ -667,6 +684,12 @@ void Crazyflie::requestParamToc(bool forceNoCache)
   m_param_use_V2 = true;
   uint16_t numParam;
   uint32_t crc;
+
+  // Lazily initialize protocol version
+  if (m_protocolVersion < 0) {
+    m_protocolVersion = getProtocolVersion();
+  }
+
   // Find the number of parameters in TOC
   crtpParamTocGetInfoV2Request infoRequest;
   startBatchRequest();
@@ -1076,13 +1099,19 @@ void Crazyflie::handleAck(
       if (m_consoleCallback) {
         m_consoleCallback(r->text);
       }
+      // std::cout << "Console CF: " << r->text << std::endl;
     }
-    // ROS_INFO("Console: %s", r->text);
   }
   else if (crtpLogGetInfoResponse::match(result)) {
     // handled in batch system
   }
+  else if (crtpLogGetInfoV2Response::match(result)) {
+    // handled in batch system
+  }
   else if (crtpLogGetItemResponse::match(result)) {
+    // handled in batch system
+  }
+  else if (crtpLogGetItemV2Response::match(result)) {
     // handled in batch system
   }
   else if (crtpLogControlResponse::match(result)) {
@@ -1110,6 +1139,9 @@ void Crazyflie::handleAck(
   else if (crtpParamTocGetItemV2Response::match(result)) {
     // handled in batch system
   }
+  else if (crtpParamSetByNameResponse::match(result)) {
+    // handled in batch system
+  }
   else if (crtpMemoryGetNumberResponse::match(result)) {
     // handled in batch system
   }
@@ -1129,6 +1161,9 @@ void Crazyflie::handleAck(
     // handled in batch system
   }
   else if (crtp(result.data[0]).port == 8) {
+    // handled in batch system
+  }
+  else if (crtp(result.data[0]).port == 13) {
     // handled in batch system
   }
   else if (crtpPlatformRSSIAck::match(result)) {
@@ -1224,15 +1259,26 @@ void Crazyflie::handleRequests(
   auto start = std::chrono::system_clock::now();
   ITransport::Ack ack;
   m_numRequestsFinished = 0;
+  m_numRequestsEnqueued = 0;
   bool sendPing = false;
+  const size_t queueSize = 16;
 
   float timeout = baseTime + timePerRequest * m_batchRequests.size();
 
-  while (true) {
-    if (!crtpMode || !sendPing) {
-      for (const auto& request : m_batchRequests) {
-        if (!request.finished) {
-          // std::cout << "sendReq" << std::endl;
+  if (useSafeLink) {
+
+    const size_t numRequests = m_batchRequests.size();
+    size_t remainingRequests = numRequests;
+    size_t requestIdx = 0;
+
+    while (remainingRequests > 0) {
+      remainingRequests = numRequests - m_numRequestsFinished;
+      // std::cout << "rR: " << remainingRequests << " " << m_numRequestsEnqueued << std::endl;
+      // enqueue up to queue size
+      while(m_numRequestsEnqueued < queueSize && requestIdx < numRequests) {
+        const auto& request = m_batchRequests[requestIdx++];
+
+        do {
           sendPacketInternal(request.request.data(), request.request.size(), ack, useSafeLink);
           handleBatchAck(ack, crtpMode);
 
@@ -1241,31 +1287,65 @@ void Crazyflie::handleRequests(
           if (elapsedSeconds.count() > timeout) {
             throw std::runtime_error("timeout");
           }
-        }
+          // std::cout << "send req " << requestIdx << std::endl;
+        } while (!ack.ack);
+        m_numRequestsEnqueued++;
       }
-      if (m_radio) {
-        sendPing = true;
-      }
-    } else {
-      for (size_t i = 0; i < 10; ++i) {
+      // send ping's until at least one item in queue is done
+      while(m_numRequestsEnqueued == queueSize
+            || (m_numRequestsFinished < numRequests && requestIdx == numRequests)) {
         crtpEmpty ping;
         sendPacket(ping, ack, useSafeLink);
         handleBatchAck(ack, crtpMode);
-        // if (ack.ack && crtpPlatformRSSIAck::match(ack)) {
-        //   sendPing = false;
-        // }
 
         auto end = std::chrono::system_clock::now();
         std::chrono::duration<double> elapsedSeconds = end-start;
         if (elapsedSeconds.count() > timeout) {
           throw std::runtime_error("timeout");
         }
+        // std::cout << "send ping " << m_numRequestsEnqueued << std::endl;
       }
-
-      sendPing = false;
     }
-    if (m_numRequestsFinished == m_batchRequests.size()) {
-      break;
+  } else {
+    while (true) {
+      if (!crtpMode || !sendPing) {
+        for (const auto& request : m_batchRequests) {
+          if (!request.finished) {
+            // std::cout << "sendReq" << std::endl;
+            sendPacketInternal(request.request.data(), request.request.size(), ack, useSafeLink);
+            handleBatchAck(ack, crtpMode);
+            auto end = std::chrono::system_clock::now();
+            std::chrono::duration<double> elapsedSeconds = end-start;
+            if (elapsedSeconds.count() > timeout) {
+              throw std::runtime_error("timeout");
+            }
+          }
+        }
+        if (m_radio && !useSafeLink) {
+          sendPing = true;
+        }
+      } else {
+        size_t remainingRequests = m_batchRequests.size() - m_numRequestsFinished;
+        for (size_t i = 0; i < remainingRequests; ++i) {
+          crtpEmpty ping;
+          sendPacket(ping, ack, useSafeLink);
+          handleBatchAck(ack, crtpMode);
+          // if (ack.ack && crtpPlatformRSSIAck::match(ack)) {
+          //   sendPing = false;
+          // }
+
+          auto end = std::chrono::system_clock::now();
+          std::chrono::duration<double> elapsedSeconds = end-start;
+          if (elapsedSeconds.count() > timeout) {
+            throw std::runtime_error("timeout");
+          }
+        }
+
+        sendPing = false;
+      }
+      if (m_numRequestsFinished == m_batchRequests.size()) {
+        break;
+      }
     }
   }
 }
@@ -1283,6 +1363,7 @@ void Crazyflie::handleBatchAck(
           request.ack = ack;
           request.finished = true;
           ++m_numRequestsFinished;
+          --m_numRequestsEnqueued;
           // std::cout << "gotack" <<std::endl;
           return;
         }
@@ -1292,6 +1373,7 @@ void Crazyflie::handleBatchAck(
           request.ack = ack;
           request.finished = true;
           ++m_numRequestsFinished;
+          --m_numRequestsEnqueued;
           // std::cout << m_numRequestsFinished / (float)m_batchRequests.size() * 100.0 << " %" << std::endl;
           return;
         }
@@ -1343,7 +1425,7 @@ void Crazyflie::uploadTrajectory(
       startBatchRequest();
       // upload pieces
       size_t remainingBytes = sizeof(poly4d) * pieces.size();
-      size_t numRequests = ceil(remainingBytes / 24);
+      size_t numRequests = ceil(remainingBytes / 24.0f);
       for (size_t i = 0; i < numRequests; ++i) {
         crtpMemoryWriteRequest req(entry.id, pieceOffset * sizeof(poly4d) + i*24);
         size_t size = std::min<size_t>(remainingBytes, 24);
@@ -1374,6 +1456,36 @@ void Crazyflie::startTrajectory(
 {
   crtpCommanderHighLevelStartTrajectoryRequest req(groupMask, relative, reversed, trajectoryId, timescale);
   sendPacketOrTimeout(req);
+}
+
+void Crazyflie::readUSDLogFile(
+  std::vector<uint8_t>& data)
+{
+  for (const auto& entry : m_memoryTocEntries) {
+    if (entry.type == MemoryTypeUSD) {
+      startBatchRequest();
+      size_t remainingBytes = entry.size;
+      size_t numRequests = ceil(remainingBytes / 24.0f);
+      for (size_t i = 0; i < numRequests; ++i) {
+        size_t size = std::min<size_t>(remainingBytes, 24);
+        crtpMemoryReadRequest req(entry.id, i*24, size);
+        remainingBytes -= size;
+        addRequest(req, 5);
+      }
+      handleRequests();
+      // put result in data vector
+      data.resize(entry.size);
+      remainingBytes = entry.size;
+      for (size_t i = 0; i < numRequests; ++i) {
+        size_t size = std::min<size_t>(remainingBytes, 24);
+        const crtpMemoryReadResponse* response = getRequestResult<crtpMemoryReadResponse>(i);
+        memcpy(&data[i*24], response->data, size);
+        remainingBytes -= size;
+      }
+      return;
+    }
+  }
+  throw std::runtime_error("Could not find MemoryTypeUSD!");
 }
 
 ////////////////////////////////////////////////////////////////
@@ -1528,32 +1640,42 @@ void CrazyflieBroadcaster::sendExternalPositions(
     requests[j].positions[i%4].y = data[i].y * 1000;
     requests[j].positions[i%4].z = data[i].z * 1000;
   }
+  // 1 header byte per packet; 7 bytes for each position
+  size_t numBytes = requests.size() + data.size() * 7;
 
   size_t remainingRequests = requests.size();
   size_t i = 0;
   while (remainingRequests > 0) {
-    if (remainingRequests >= 2) {
-      send2Packets(reinterpret_cast<const uint8_t*>(&requests[i]), 2 * sizeof(crtpExternalPositionPacked));
+    // the crazyradio requires the two packets to be the same size
+    // -> only send2packets if this is possible
+    if (   remainingRequests >= 2
+        && numBytes >= 2 * sizeof(crtpExternalPositionPacked)) {
+      size_t size = std::min(numBytes, 2 * sizeof(crtpExternalPositionPacked));
+      send2Packets(reinterpret_cast<const uint8_t*>(&requests[i]), size);
       remainingRequests -= 2;
+      numBytes -= size;
       i += 2;
     } else {
-      sendPacket(reinterpret_cast<const uint8_t*>(&requests[i]), sizeof(crtpExternalPositionPacked));
+      size_t size = std::min(numBytes, sizeof(crtpExternalPositionPacked));
+      sendPacket(reinterpret_cast<const uint8_t*>(&requests[i]), size);
       remainingRequests -= 1;
+      numBytes -= size;
       i += 1;
     }
   }
+  // assert(numBytes == 0);
 }
 
-static float const POSITION_LIMIT = 8.0f; // meters
-static const uint32_t INT24_MAX = 8388607;
-static inline posFixed24_t position_float_to_fix24(float x)
+void CrazyflieBroadcaster::emergencyStop()
 {
-  uint32_t val = (INT24_MAX / POSITION_LIMIT) * (x + POSITION_LIMIT);
-  posFixed24_t result;
-  result.low = (val >> 0) & 0xFF;
-  result.middle = (val >> 8) & 0xFF;
-  result.high = (val >> 16) & 0xFF;
-  return result;
+  crtpEmergencyStopRequest req;
+  sendPacket((uint8_t*)&req, sizeof(req));
+}
+
+void CrazyflieBroadcaster::emergencyStopWatchdog()
+{
+  crtpEmergencyStopWatchdogRequest req;
+  sendPacket((uint8_t*)&req, sizeof(req));
 }
 
 // assumes input quaternion is normalized. will fail if not.
@@ -1595,41 +1717,40 @@ void CrazyflieBroadcaster::sendExternalPoses(
     return;
   }
 
-#if 0
-  std::vector<crtpExternalPositionPacked> requests(ceil(data.size() / 4.0));
-  for (size_t i = 0; i < data.size(); ++i) {
-    size_t j = i / 4;
-    requests[j].positions[i%4].id = data[i].id;
-    requests[j].positions[i%4].x = data[i].x * 1000;
-    requests[j].positions[i%4].y = data[i].y * 1000;
-    requests[j].positions[i%4].z = data[i].z * 1000;
-  }
-# else
-  std::vector<crtpPosExtBringup> requests(ceil(data.size() / 2.0));
+  std::vector<crtpExternalPosePacked> requests(ceil(data.size() / 2.0));
   for (size_t i = 0; i < data.size(); ++i) {
     size_t j = i / 2;
-    requests[j].data.pose[i%2].id = data[i].id;
-    requests[j].data.pose[i%2].x = position_float_to_fix24(data[i].x);
-    requests[j].data.pose[i%2].y = position_float_to_fix24(data[i].y);
-    requests[j].data.pose[i%2].z = position_float_to_fix24(data[i].z);
+    requests[j].poses[i%2].id = data[i].id;
+    requests[j].poses[i%2].x = data[i].x * 1000;
+    requests[j].poses[i%2].y = data[i].y * 1000;
+    requests[j].poses[i%2].z = data[i].z * 1000;
     float q[4] = { data[i].qx, data[i].qy, data[i].qz, data[i].qw };
-    requests[j].data.pose[i%2].quat = quatcompress(q);
+    requests[j].poses[i%2].quat = quatcompress(q);
   }
-#endif
+  // 2 header byte per packet; 11 bytes for each position
+  size_t numBytes = requests.size() * 2 + data.size() * 11;
 
   size_t remainingRequests = requests.size();
   size_t i = 0;
   while (remainingRequests > 0) {
-    if (remainingRequests >= 2) {
-      send2Packets(reinterpret_cast<const uint8_t*>(&requests[i]), 2 * sizeof(crtpExternalPositionPacked));
+    // the crazyradio requires the two packets to be the same size
+    // -> only send2packets if this is possible
+    if (   remainingRequests >= 2
+        && numBytes >= 2 * sizeof(crtpExternalPosePacked)) {
+      size_t size = std::min(numBytes, 2 * sizeof(crtpExternalPosePacked));
+      send2Packets(reinterpret_cast<const uint8_t*>(&requests[i]), size);
       remainingRequests -= 2;
+      numBytes -= size;
       i += 2;
     } else {
-      sendPacket(reinterpret_cast<const uint8_t*>(&requests[i]), sizeof(crtpExternalPositionPacked));
+      size_t size = std::min(numBytes, sizeof(crtpExternalPosePacked));
+      sendPacket(reinterpret_cast<const uint8_t*>(&requests[i]), size);
       remainingRequests -= 1;
+      numBytes -= size;
       i += 1;
     }
   }
+  // assert(numBytes == 0);
 }
 
 // void CrazyflieBroadcaster::setParam(
