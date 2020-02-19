@@ -230,6 +230,14 @@ void Crazyflie::sendFullStateSetpoint(
   sendPacket(request);
 }
 
+void Crazyflie::sendVelocityWorldSetpoint(
+        float x, float y, float z, float yawRate)
+{
+  crtpVelocityWorldSetpointRequest request(
+    x, y, z, yawRate);
+  sendPacket(request);
+}
+
 void Crazyflie::sendExternalPositionUpdate(
   float x,
   float y,
@@ -877,7 +885,7 @@ void Crazyflie::startSetParamRequest()
   startBatchRequest();
 }
 
-void Crazyflie::addSetParam(uint8_t id, const ParamValue& value)
+void Crazyflie::addSetParam(uint16_t id, const ParamValue& value)
 {
   bool found = false;
   for (auto&& entry : m_paramTocEntries) {
@@ -991,7 +999,7 @@ void Crazyflie::setRequestedParams()
   handleRequests();
 }
 
-void Crazyflie::setParam(uint8_t id, const ParamValue& value)
+void Crazyflie::setParam(uint16_t id, const ParamValue& value)
 {
   startBatchRequest();
   addSetParam(id, value);
@@ -1265,7 +1273,10 @@ void Crazyflie::handleRequests(
 
   float timeout = baseTime + timePerRequest * m_batchRequests.size();
 
-  if (useSafeLink) {
+  // Workaround for https://github.com/USC-ACTLab/crazyswarm/issues/172
+  // Disable safelink for now, until packets are really not dropped
+  // anymore.
+  if (false /*useSafeLink*/) {
 
     const size_t numRequests = m_batchRequests.size();
     size_t remainingRequests = numRequests;
