@@ -13,7 +13,7 @@
 #include <map>
 #include <chrono>
 
-#define ENABLE_SAFELINK 1
+#define ENABLE_SAFELINK 0
 
 class Logger
 {
@@ -147,17 +147,19 @@ public:
     float yawrate,
     float zDistance);
 
-  void sendStop();
-
-  void emergencyStop();
-
-  void emergencyStopWatchdog();
-
   void sendPositionSetpoint(
     float x,
     float y,
     float z,
     float yaw);
+
+  void notifySetpointsStop(uint32_t remainValidMillisecs);
+
+  void sendStop();
+
+  void emergencyStop();
+
+  void emergencyStopWatchdog();
 
   void sendExternalPositionUpdate(
     float x,
